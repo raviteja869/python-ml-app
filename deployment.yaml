@@ -1,0 +1,35 @@
+# Step 1: Deployment Configuration
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: python-ml-app-deployment
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: python-ml-app
+  template:
+    metadata:
+      labels:
+        app: python-ml-app
+    spec:
+      containers:
+      - name: python-ml-app-container
+        image: gcr.io/python-regression-cicd-flow/python-ml-app:latest
+        ports:
+        - containerPort: 80
+
+---
+# Step 2: Service Configuration
+apiVersion: v1
+kind: Service
+metadata:
+  name: python-ml-app-service
+spec:
+  selector:
+    app: python-ml-app
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+  type: LoadBalancer
