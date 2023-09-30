@@ -1,11 +1,12 @@
-name: CI/CD Pipeline
+name: CI/CD Pipeline for Python Project
 
 on:
   push:
     branches:
       - main
+
 jobs:
-  build:
+  build-and-test:
     runs-on: ubuntu-latest
 
     steps:
@@ -22,65 +23,71 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Build project
-      run: python setup.py build > build.log
+    - name: Build the Python project
+      run: python setup.py build > build_output.log
 
-    - name: Upload build log
+    - name: Test and generate coverage report
+      run: |
+        pip install coverage
+        coverage run -m unittest discover
+        coverage report > coverage_report.log
+        coverage xml
+
+    - name: Upload build and coverage logs as artifacts
       uses: actions/upload-artifact@v2
       with:
-        name: build-log
-        path: build.log
-  test:
-    needs: build
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v2
-
-    - name: Set up Python
-      uses: actions/setup-python@v2
-      with:
-        python-version: 3.8
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-
-    - name: Run tests and generate coverage report
-      run: |
-        pip install pytest-cov
-        pytest --cov=my_module --cov-report=xml > test.log
-
-    - name: Upload test log and coverage report
-      uses: actions/upload-artifact@v2
-      with:
-        name: test-outputs
-        path: |
-          test.log
-          coverage.xml
-  deploy:
-    needs: test
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v2
+        name: logs
+        paths:
+          - build_output.log
+          - coverage_report.log
 
     - name: Build Docker image
       run: |
-        docker build -t my-python-app .
+        docker build -t python-ml-app:latest .
 
-    - name: Login to Google Cloud
-      uses: google-github-actions/setup-gcloud@master
+    - name: Save Docker image
+      run: docker save -o python-ml-app.tar python-ml-app:latest
+
+    - name: Upload Docker image as artifact
+      uses: actions/upload-artifact@v2
+      with:
+        name: docker-image
+        path: python-ml-app.tar
+
+  deploy:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Download Docker image artifact
+      uses: actions/download-artifact@v2
+      with:
+        name: docker-image
+
+    - name: Load Docker image
+      run: docker load -i python-ml-app.tar
+
+    - name: Setup gcloud CLI
+      uses: google-github-actions/setup-gcloud@v0.2.1
       with:
         service_account_key: ${{ secrets.GCP_SA_KEY }}
         project_id: ${{ secrets.GCP_PROJECT_ID }}
         export_default_credentials: true
 
-    - name: Push Docker image to Google Container Registry
+    - name: Configure Docker to use GCR
       run: |
-        docker tag my-python-app gcr.io/${{ secrets.GCP_PROJECT_ID }}/my-python-app
-        docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/my-python-app
+        gcloud auth configure-docker
 
+    - name: Push Docker image to GCR
+      run: |
+        docker tag python-ml-app:latest gcr.io/${{ secrets.GCP_PROJECT_ID }}/python-ml-app:${{ github.sha }}
+        docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/python-ml-app:${{ github.sha }}
+
+    - name: Deploy to GKE
+      run: |
+        gcloud container clusters get-credentials ${{ secrets.GCP_CLUSTER_NAME }} --zone ${{ secrets.GCP_CLUSTER_ZONE }}
+        sed -i 's|gcr.io/python-regression-cicd-flow/python-ml-app:latest|gcr.io/${{ secrets.GCP_PROJECT_ID }}/python-ml-app:${{ github.sha }}|' deployment.yaml
+        kubectl apply -f deployment.yaml
